@@ -9,18 +9,22 @@
 #include <functional>
 #include <exception>
 #include <iostream>
+#include <iterator>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 
-#include <ifm3d_ros2/constants.hpp>
+#include <ifm3d_ros2/buffer_id_utils.hpp>
 #include <ifm3d_ros2/qos.hpp>
 
 #include <ifm3d/contrib/nlohmann/json.hpp>
 
-sensor_msgs::msg::Image ifm3d_to_ros_image(ifm3d::Buffer& image, // Need non-const image because image.begin(),
-                                                                 // image.end() don't have const overloads.
-                                                                 // TODO(CE) check comments
+sensor_msgs::msg::Image ifm3d_to_ros_image(ifm3d::Buffer& image,  // Need non-const image because image.begin(),
+                                                                  // image.end() don't have const overloads.
+                                                                  // TODO(CE) check comments
                                            const std_msgs::msg::Header& header, const rclcpp::Logger& logger)
 {
   static constexpr auto max_pixel_format = static_cast<std::size_t>(ifm3d::pixel_format::FORMAT_32F3);
@@ -87,8 +91,8 @@ sensor_msgs::msg::Image ifm3d_to_ros_image(ifm3d::Buffer&& image, const std_msgs
 }
 
 sensor_msgs::msg::CompressedImage ifm3d_to_ros_compressed_image(ifm3d::Buffer& image,  // Need non-const image because
-                                                                                      // image.begin(), image.end()
-                                                                                      // don't have const overloads.
+                                                                                       // image.begin(), image.end()
+                                                                                       // don't have const overloads.
                                                                 const std_msgs::msg::Header& header,
                                                                 const std::string& format,  // "jpeg" or "png"
                                                                 const rclcpp::Logger& logger)
@@ -286,13 +290,27 @@ TC_RETVAL CameraNode::on_configure(const rclcpp_lifecycle::State& prev_state)
 
   this->get_parameter("password", this->password_);
   RCLCPP_INFO(this->logger_, "password: %s", std::string(this->password_.size(), '*').c_str());
-  ;
 
-  this->get_parameter("buffer_id_list", this->buffer_id_list_);
-  // TODO(CE) print buffer_id list
-  // std::string buffer_id_string;
-  // for (const auto& s : this->buffer_id_list_) buffer_id_string += std::string(s) + ", ";
-  // RCLCPP_INFO(this->logger_, "buffer_id_list: %s", buffer_id_string);
+  std::vector<std::string> buffer_id_strings;
+  this->get_parameter("buffer_id_list", buffer_id_strings);
+  RCLCPP_INFO(this->logger_, "Reading %ld buffer_ids: [%s]", buffer_id_strings.size(),
+              buffer_id_utils::vector_to_string(buffer_id_strings).c_str());
+  // Populate buffer_id_list_ from read strings
+  this->buffer_id_list_.clear();
+  for (const std::string& string : buffer_id_strings)
+  {
+    ifm3d::buffer_id found_id;
+    if (buffer_id_utils::convert(string, found_id))
+    {
+      this->buffer_id_list_.push_back(found_id);
+    }
+    else
+    {
+      RCLCPP_WARN(this->logger_, "Ignoring unknown buffer_id %s", string.c_str());
+    }
+  }
+  RCLCPP_INFO(this->logger_, "Parsed %ld buffer_ids: %s", this->buffer_id_list_.size(),
+              buffer_id_utils::vector_to_string(this->buffer_id_list_).c_str());
 
   this->get_parameter("timeout_millis", this->timeout_millis_);
   RCLCPP_INFO(this->logger_, "timeout_millis: %d", this->timeout_millis_);
@@ -344,13 +362,10 @@ TC_RETVAL CameraNode::on_activate(const rclcpp_lifecycle::State& prev_state)
   this->rgb_pub_->on_activate();
   RCLCPP_INFO(this->logger_, "Publishers activated.");
 
-  // Start the Framegrabber
-  std::vector<std::variant<long unsigned int, int, ifm3d::buffer_id>> buffer_ids;
-  for (std::string& s : buffer_id_list_)
-  {
-    buffer_ids.push_back(buffer_id_map[s]);
-  }
-  this->fg_->Start(buffer_ids);
+  // Start the Framegrabber, needs a BufferList (a vector of std::variant)
+  std::vector<std::variant<long unsigned int, int, ifm3d::buffer_id>> buffer_list{};
+  buffer_list.insert(buffer_list.end(), buffer_id_list_.begin(), buffer_id_list_.end());
+  this->fg_->Start(buffer_list);
 
   // start the publishing loop
   this->test_destroy_ = false;
@@ -491,11 +506,7 @@ void CameraNode::init_params()
   this->declare_parameter("password", ifm3d::DEFAULT_PASSWORD, password_descriptor);
 
   rcl_interfaces::msg::ParameterDescriptor buffer_id_list_descriptor;
-  const std::vector<std::string> default_buffer_id_list{
-    "RADIAL_DISTANCE_IMAGE",
-    "AMPLITUDE_IMAGE",
-    "CARTESIAN_ALL"
-  };
+  const std::vector<std::string> default_buffer_id_list{ "RADIAL_DISTANCE_IMAGE", "AMPLITUDE_IMAGE", "CARTESIAN_ALL" };
   buffer_id_list_descriptor.name = "buffer_id_list";
   buffer_id_list_descriptor.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING_ARRAY;
   buffer_id_list_descriptor.description = "List of buffer_id strings denoting the wanted buffers.";
@@ -843,7 +854,8 @@ void CameraNode::publish_loop()
     //     std::chrono::duration_cast<std::chrono::nanoseconds>(this->im_->TimeStamp().time_since_epoch()).count(),
     //     RCL_SYSTEM_TIME);
 
-    // if (std::fabs((frame_time - now).nanoseconds() / static_cast<float>(std::nano::den)) > this->frame_latency_thresh_)
+    // if (std::fabs((frame_time - now).nanoseconds() / static_cast<float>(std::nano::den)) >
+    // this->frame_latency_thresh_)
     // {
     //   RCLCPP_WARN_ONCE(this->logger_, "Frame latency thresh exceeded, using reception timestamps!");
     //   head.stamp = now;

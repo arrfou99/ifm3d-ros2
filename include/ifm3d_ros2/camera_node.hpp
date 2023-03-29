@@ -229,7 +229,7 @@ private:
   std::string ip_{};
   std::uint16_t xmlrpc_port_{};
   std::string password_{};
-  std::vector<std::string> buffer_id_list_{};
+  std::vector<ifm3d::buffer_id> buffer_id_list_{};
   int timeout_millis_{};
   float timeout_tolerance_secs_{};
   float frame_latency_thresh_{};  // seconds
